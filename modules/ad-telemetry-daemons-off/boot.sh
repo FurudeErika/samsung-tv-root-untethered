@@ -40,6 +40,20 @@
 # to test whether their retained frame could be read for a Home Assistant camera. They do not produce one on
 # this firmware (the CaptureManager singleton stays NULL even while video plays), so they stay masked here
 # and are deliberately NOT excluded from UNITS.
+#
+# 1.2.0 — two units leave the list on a measured finding, not a hunch:
+# slive-provider-daemon (Type=dbus, BusName=com.samsung.FCCallListener) and
+# com.samsung.tv.context-aware-service (Type=dbus,
+# BusName=org.tizen.tv.contextaware2). Masking a unit that OWNS a bus name is
+# not the same as masking a plain daemon: callers block waiting for a name owner
+# that can never appear. That is how masking data-service (org.tizen.tv.logger)
+# put a 2-3 s dead zone behind every remote key press on this set, and masking
+# the busname unit alongside it does not shorten the wait - it makes it
+# permanent. These are the only two name owners here; everything else in UNITS is
+# Type=simple with no BusName, verified with systemctl show -p Type -p BusName.
+# Same audit is the leading suspect for the standby wedge that forced the 1.2.0
+# extension of samsung-telemetry-off to be reverted (both of them were in that
+# arm).
 # Vendor opt-out switches (negated ConditionPathExists in the unit files):
 # touching the matching path under /opt/usr/share/systemd/system keeps the
 # unit from starting at all — persistent, no mask needed, trivially reverted
@@ -47,22 +61,35 @@
 # also block manual/dbus starts).
 OPTOUT=/opt/usr/share/systemd/system
 mkdir -p $OPTOUT 2>/dev/null
-for o in pisa-service canalysis-daemon slive-provider-daemon \
-         com.samsung.tv.context-aware-agent \
-         com.samsung.tv.context-aware-service; do
+for o in pisa-service canalysis-daemon \
+         com.samsung.tv.context-aware-agent; do
     touch $OPTOUT/$o 2>/dev/null
 done
 
+# Heal a boot where 1.1.0 masked the two name owners: undo the masks and their
+# opt-out switches, reload, start them. The runtime masks are tmpfs so a cold
+# boot is already clean, but the manager can re-apply this module without one.
+for u in slive-provider-daemon.service com.samsung.FCCallListener.busname \
+         com.samsung.tv.context-aware-service.service \
+         com.samsung.tv.context-aware-service.path; do
+    systemctl unmask --runtime "$u" >/dev/null 2>&1
+done
+rm -f $OPTOUT/slive-provider-daemon $OPTOUT/com.samsung.tv.context-aware-service 2>/dev/null
+systemctl daemon-reload >/dev/null 2>&1
+for u in slive-provider-daemon com.samsung.tv.context-aware-service; do
+    systemctl start --no-block "$u.service" >/dev/null 2>&1
+done
+
+# NOTE (1.2.0): slive-provider-daemon and com.samsung.tv.context-aware-service
+# are deliberately absent - both own a D-Bus name the UI can call. See header.
 UNITS="
 adagent-service
 pisa-service
 canalysis-service
-slive-provider-daemon
 contents-recognition-service
 contents-ui-detector-service
 contents-cognition-service-manager
 com.samsung.tv.context-aware-agent
-com.samsung.tv.context-aware-service
 com.samsung.tv.cis-api-service-app
 "
 # Activation triggers for the services above, same treatment.
@@ -70,11 +97,12 @@ COMPANIONS="
 pisa-service.socket
 pisa-service.path
 com.samsung.tv.context-aware-agent.path
-com.samsung.tv.context-aware-service.path
-com.samsung.FCCallListener.busname
 "
-# FCCallListener.busname is slive-provider-daemon's D-Bus activation unit;
-# leaving it live turns client calls into failed activations behind the mask.
+# 1.2.0 dropped two companions together with their services:
+# com.samsung.FCCallListener.busname (slive-provider-daemon's activation unit)
+# and com.samsung.tv.context-aware-service.path. Killing the activation unit of a
+# name owner does not turn client calls into fast failures, it makes them wait
+# forever, because nothing is ever allowed to own the name again.
 for u in $UNITS $COMPANIONS; do
     systemctl mask --runtime "$u" >/dev/null 2>&1
     systemctl stop --no-block "$u" >/dev/null 2>&1
