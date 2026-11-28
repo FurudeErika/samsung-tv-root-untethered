@@ -68,15 +68,28 @@
 # Why it is on the input path: data-service.service is Type=dbus,
 # BusName=org.tizen.tv.logger, Restart=always, and
 # /usr/share/dbus-1/system-services maps BOTH org.tizen.tv.logger and
-# org.tizen.tv.dataservice to SystemdService=data-service.service. It is the
-# local log/data bus that UI code calls into, not a network reporter - the
-# reporters (bms, pushd, issue_report_agent, abnormal_user_behavior,
-# media-analytics-service) stay masked. Corroborating signal while it was
-# masked: "kdbus: timeout(sync), src(P:622 = /usr/bin/common-daemon-basic-monitor)
-# ->dest(P:1 C:119)" inside the key window, and zero such lines after unmasking.
-# Cost: whatever this daemon logs locally keeps being collected. Residual
-# exposure is stated here rather than hidden, because the alternative is a TV
-# whose remote is unusable.
+# org.tizen.tv.dataservice to SystemdService=data-service.service. Everything
+# that logs a KPI event - including the input path - calls into that bus, so
+# masking it leaves those callers waiting for a name owner that can never
+# appear. Corroborating signal while it was masked: "kdbus: timeout(sync),
+# src(P:622 = /usr/bin/common-daemon-basic-monitor)->dest(P:1 C:119)" inside the
+# key window, and zero such lines after unmasking.
+# Cost, stated plainly: this daemon is the uploader, not a harmless local
+# logger. /usr/bin/data-service is a Flume-style agent (CollectorLoader,
+# DataAggregator, HttpChannel over libcurl, SocketChannel, DBusChannel,
+# FileChannel; no URL compiled in) whose
+# /opt/usr/apps/data-service/data/ConfigFile.txt subscribes to P/Kpi/All,
+# R/Broadcast/Program/Current, P/App/Change, P/Network/Change,
+# P/Setting/Sound/Volume, P/System/PSID, R/Sensor/Eco and P/Remocon/Key, and
+# whose /opt/usr/apps/data-service-collector/kpi/LogConfig.xml routes 120
+# services to https://lcprd1.samsungcloudsolution.net/openapi/log/<name> with
+# deviceid and guid attributes. The other reporters (bms, pushd,
+# issue_report_agent, abnormal_user_behavior, media-analytics-service) stay
+# masked; on the audited set that host does not even resolve, and the daemon's
+# own counter kpi/MonitorData.txt reads total=75 fail=75 curlresolvehosterr=75
+# with nothing queued. So today's silence comes from the LAN firewall, not from
+# this module - and if the module list itself has to be the guarantee, this is
+# the one unit you cannot get that way, because masking it costs the remote.
 # Deliberately NOT touched: app-context-manager (/usr/bin/tvctx-manager
 # /etc/tvctx-manager/appctx-config.json) is the app-relaunch rules engine this
 # module's own voice-app workaround depends on, and org.tizen.dseal
