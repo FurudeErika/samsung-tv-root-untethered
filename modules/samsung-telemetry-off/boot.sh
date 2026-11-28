@@ -13,10 +13,12 @@
 # while the module is disabled so supervision never hot-loops.
 #
 # Two kill classes:
-# - systemd units (data-service, pushd, bms, appbinary-manager and, since
+# - systemd units (pushd, bms, appbinary-manager and, since
 #   1.3.0, issue_report_agent, abnormal_user_behavior, media-analytics-service,
 #   com.samsung.tv.farfieldvoice, com.samsung.tv.voiceid-service): mask
 #   --runtime + stop. Matching .path/.socket watchers stopped too.
+#   data-service was in this list up to 1.3.0 and must never return to it;
+#   see the 1.4.0 block below.
 # - Tizen apps (acr-service-app, voice-*, bixby-*, ssoservice, CIS):
 #   children of launchpad-process-pool; aul relaunches kills within ~20s
 #   and de-preloading does not stop it, so voice binaries live renamed
@@ -49,6 +51,32 @@
 #   masked door.
 # - pushd is socket-activated (After=pushd.socket), so the socket is masked
 #   along with the service.
+#
+# 1.4.0 — data-service is NOT masked any more, and this is a measured result,
+# not a guess. Bisected on this set (QN65S90FAGXZB / T-RSMFUABC-0090) on
+# 2026-11-28 by group-then-split press tests, because the symptom was felt on
+# the remote, not seen in any log:
+# - whole module applied -> volume keys sluggish: one press made TWO steps at
+#   the eARC AVR, further presses dropped for 2-3 s until the volume overlay
+#   painted.
+# - restored only data-service, nine other units still masked -> instant.
+# - masked data-service alone, everything else restored -> sluggish again.
+# - also masking org.tizen.tv.logger.busname + org.tizen.tv.dataservice.busname
+#   -> still sluggish, so this is not the "masked service, live busname"
+#   activation trap from sw-update-off's BUSNAMES note. The caller waits for the
+#   *name owner*, not for the activation job; the daemon has to run.
+# Why it is on the input path: data-service.service is Type=dbus,
+# BusName=org.tizen.tv.logger, Restart=always, and
+# /usr/share/dbus-1/system-services maps BOTH org.tizen.tv.logger and
+# org.tizen.tv.dataservice to SystemdService=data-service.service. It is the
+# local log/data bus that UI code calls into, not a network reporter - the
+# reporters (bms, pushd, issue_report_agent, abnormal_user_behavior,
+# media-analytics-service) stay masked. Corroborating signal while it was
+# masked: "kdbus: timeout(sync), src(P:622 = /usr/bin/common-daemon-basic-monitor)
+# ->dest(P:1 C:119)" inside the key window, and zero such lines after unmasking.
+# Cost: whatever this daemon logs locally keeps being collected. Residual
+# exposure is stated here rather than hidden, because the alternative is a TV
+# whose remote is unusable.
 # Deliberately NOT touched: app-context-manager (/usr/bin/tvctx-manager
 # /etc/tvctx-manager/appctx-config.json) is the app-relaunch rules engine this
 # module's own voice-app workaround depends on, and org.tizen.dseal
@@ -102,8 +130,15 @@ for o in bms org.tizen.voice-app com.samsung.tv.ondevice-voice \
 done
 # (Also found, unused: bms honors /run/user/5001/bms_block, creatable
 # even without root.)
-for u in data-service \
-         pushd \
+# data-service must be RUNNING (1.4.0, see header). Unmasking it here heals a
+# boot where 1.3.0 or earlier applied the mask without needing a reboot; the
+# runtime mask is tmpfs, so a cold boot is already clean.
+for u in data-service.service org.tizen.tv.logger.busname org.tizen.tv.dataservice.busname; do
+    systemctl unmask --runtime "$u" >/dev/null 2>&1
+done
+systemctl daemon-reload >/dev/null 2>&1
+systemctl start --no-block data-service.service >/dev/null 2>&1
+for u in pushd \
          bms \
          appbinary-manager \
          issue_report_agent \
@@ -153,7 +188,7 @@ sweep
 # The sweep SIGKills processes whose units are masked above, and systemd records
 # that as a failed unit. Clear it so `systemctl --failed` stays a meaningful
 # signal (same ordering lesson as sw-update-off, from the 2026-11-25 dry run).
-for u in data-service pushd bms appbinary-manager issue_report_agent \
+for u in pushd bms appbinary-manager issue_report_agent \
          abnormal_user_behavior media-analytics-service \
          com.samsung.tv.farfieldvoice com.samsung.tv.voiceid-service; do
     systemctl reset-failed "$u.service" >/dev/null 2>&1
