@@ -54,34 +54,50 @@
 # Same audit is the leading suspect for the standby wedge that forced the 1.2.0
 # extension of samsung-telemetry-off to be reverted (both of them were in that
 # arm).
-# Vendor opt-out switches (negated ConditionPathExists in the unit files):
-# touching the matching path under /opt/usr/share/systemd/system keeps the
-# unit from starting at all — persistent, no mask needed, trivially reverted
-# by deleting the file. Masks are still applied as belt-and-braces (they
-# also block manual/dbus starts).
+# 1.3.0 — those two come back under suppression, in the one form the measurement
+# permits: vendor opt-out file plus `systemctl stop`, never a mask. Both units
+# carry the gate on this image (systemctl cat, 2026-11-28):
+#   slive-provider-daemon.service          ConditionPathExists=!$OPTOUT/slive-provider-daemon
+#     Type=dbus BusName=com.samsung.FCCallListener
+#   com.samsung.tv.context-aware-service   ConditionPathExists=!$OPTOUT/com.samsung.tv.context-aware-service
+#     Type=dbus BusName=org.tizen.tv.contextaware2
+# so the file keeps them from starting at all, and a stopped-but-unmasked name
+# owner costs the input path nothing: two press rounds on this set — stop
+# slive-provider-daemon, then stop com.samsung.tv.context-aware-service, with no
+# mask applied either time — were both judged instant, where masking them was
+# sluggish. data-service is NOT expressible this way and must never be added:
+# `systemctl cat data-service.service` shows no ConditionPathExists at all, so
+# anything that asks for org.tizen.tv.logger starts it again, and the only lever
+# that would hold it down is the mask that caused the dead zone.
+#
+# Vendor opt-out switches for the plain daemons use the same negated
+# ConditionPathExists; touching the matching path keeps a unit from starting at
+# all, persists across boots, and is reverted by deleting the file. Masks remain on
+# the Type=simple units, where they also block manual and D-Bus starts; for the two
+# name owners above a mask is never applied.
 OPTOUT=/opt/usr/share/systemd/system
 mkdir -p $OPTOUT 2>/dev/null
-for o in pisa-service canalysis-daemon \
-         com.samsung.tv.context-aware-agent; do
-    touch $OPTOUT/$o 2>/dev/null
-done
 
-# Heal a boot where 1.1.0 masked the two name owners: undo the masks and their
-# opt-out switches, reload, start them. The runtime masks are tmpfs so a cold
-# boot is already clean, but the manager can re-apply this module without one.
+# Heal first, before any new state is written: a boot that ran 1.1.0 still has that
+# release's runtime masks on the two name owners, and systemd caches masked state
+# in memory rather than re-deriving it from /run — so unmask, then daemon-reload,
+# and only then apply the gate. Skipping the reload leaves the gate evaluated
+# against a unit systemd still refuses to look at.
 for u in slive-provider-daemon.service com.samsung.FCCallListener.busname \
          com.samsung.tv.context-aware-service.service \
          com.samsung.tv.context-aware-service.path; do
     systemctl unmask --runtime "$u" >/dev/null 2>&1
 done
-rm -f $OPTOUT/slive-provider-daemon $OPTOUT/com.samsung.tv.context-aware-service 2>/dev/null
 systemctl daemon-reload >/dev/null 2>&1
-for u in slive-provider-daemon com.samsung.tv.context-aware-service; do
-    systemctl start --no-block "$u.service" >/dev/null 2>&1
+
+for o in pisa-service canalysis-daemon \
+         com.samsung.tv.context-aware-agent \
+         slive-provider-daemon com.samsung.tv.context-aware-service; do
+    touch $OPTOUT/$o 2>/dev/null
 done
 
-# NOTE (1.2.0): slive-provider-daemon and com.samsung.tv.context-aware-service
-# are deliberately absent - both own a D-Bus name the UI can call. See header.
+# NOTE: slive-provider-daemon and com.samsung.tv.context-aware-service stay out of
+# UNITS. Gated and stopped, not masked — see 1.3.0 above.
 UNITS="
 adagent-service
 pisa-service
@@ -107,12 +123,25 @@ for u in $UNITS $COMPANIONS; do
     systemctl mask --runtime "$u" >/dev/null 2>&1
     systemctl stop --no-block "$u" >/dev/null 2>&1
 done
+
+# Stop the two gated name owners if this boot started them before the gate existed;
+# the file only decides future starts. --no-block for the reason documented in
+# samsung-telemetry-off: the module loop runs inside the boot agent's sdb session,
+# whose CLI window is 45 s, and a blocking stop on a Restart=always unit that is
+# still activating can hold it for minutes.
+for u in slive-provider-daemon com.samsung.tv.context-aware-service; do
+    systemctl stop --no-block "$u.service" >/dev/null 2>&1
+    printf '%s -> active=%s load=%s gated=%s\n' "$u" \
+        "$(systemctl is-active "$u.service" 2>&1 | head -1)" \
+        "$(systemctl show "$u.service" -p LoadState --value 2>&1)" \
+        "$([ -f "$OPTOUT/$u" ] && echo yes || echo no)"
+done
 for u in $UNITS; do
     printf '%s -> %s\n' "$u" "$(systemctl is-active "$u.service" 2>&1)"
 done
 # Last, not inline: samsung-telemetry-off's sweep SIGKills adagent and pisa,
 # which systemd records as failed. Clearing it here keeps --failed meaningful.
-for u in $UNITS $COMPANIONS; do
+for u in $UNITS $COMPANIONS slive-provider-daemon com.samsung.tv.context-aware-service; do
     systemctl reset-failed "$u" >/dev/null 2>&1
 done
 exit 0

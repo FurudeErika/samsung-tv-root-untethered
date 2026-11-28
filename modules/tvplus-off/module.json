@@ -1,8 +1,8 @@
 {
   "id": "tvplus-off",
   "name": "Disable Samsung TV Plus",
-  "version": "1.1.0",
-  "description": "1.1.0 no longer masks or kills slive-provider-daemon: it is Type=dbus with BusName=com.samsung.FCCallListener, and masking a bus-name owner leaves callers waiting for an owner that can never appear (the measured cause of a 2-3 s remote-key dead zone when data-service was masked; see samsung-telemetry-off 1.4.0). TV Plus still stays off because the player (bms-service), the setting and the boot flag are what this module removes; the lineup fetcher is left idle. It also unmasks slive and its triggers on apply so an upgraded boot heals without a reboot. Turns off 'Autorun Samsung TV Plus' (db/menu/autorun_tv_plus), clears the boot-into-TV-Plus flag, masks the TV Plus backend (bms-service, slive-util channel dump) and reaps the standalone TV Plus app via a supervised 30s watchdog. Disable via the manager or the disabled flag; revival needs a reboot.",
+  "version": "1.2.0",
+  "description": "1.2.0 suppresses slive-provider-daemon with the vendor opt-out file plus systemctl stop instead of leaving it running: the unit gates on ConditionPathExists=!/opt/usr/share/systemd/system/slive-provider-daemon, stop-only was press-tested instant, and no mask is ever applied to it (masking a bus-name owner is the measured cause of the 2-3 s remote-key dead zone). TV Plus itself stays off through db/menu/autorun_tv_plus=0, the bstr_tvplus_mode boot flag, the bms and slive-util masks and the standalone-app kill sweep.",
   "author": "Clément Péron",
   "scripts": { "boot": "boot.sh" },
   "minAgent": "4"

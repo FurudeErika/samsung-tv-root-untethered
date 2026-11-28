@@ -43,6 +43,15 @@
 # this module takes away, while the lineup fetcher idles. Whether slive can
 # safely be suppressed after all is a separate open measurement, tracked in the
 # Home Assistant repo's DISCOVERY.md; this module no longer depends on it.
+# 1.2.0 — the open question in 1.1.0 closed, in the direction of more coverage:
+# suppression by vendor opt-out file plus stop is safe on this set. Two press
+# rounds (stop slive-provider-daemon, then stop com.samsung.tv.context-aware-service,
+# no mask applied either time) were both judged instant, and the unit carries
+# ConditionPathExists=!/opt/usr/share/systemd/system/slive-provider-daemon, so the
+# lineup fetcher now stays down across boots. What is still forbidden is the mask: a
+# masked name owner is the measured fault (2-3 s behind every key press), a stopped
+# one is not. ad-telemetry-daemons-off 1.3.0 applies the identical method, so the two
+# modules no longer disagree about whether slive is suppressed.
 #
 # Not touched: db/tvplus/support (a product capability flag; turning it off
 # has unknown effects on tv-viewer and channel-list) and the TV Plus
@@ -75,15 +84,17 @@ rm -f /opt/usr/apps/bstr_tvplus_mode /tmp/tvplus_ready 2>/dev/null
 OPTOUT=/opt/usr/share/systemd/system
 mkdir -p $OPTOUT 2>/dev/null
 touch $OPTOUT/bms 2>/dev/null
-# 1.1.0 heal: undo what 1.0.x did to the name owner so an upgraded boot recovers
-# without a reboot (runtime masks are tmpfs, so a cold boot is already clean).
-rm -f $OPTOUT/slive-provider-daemon 2>/dev/null
+# Heal what 1.0.x did to the name owner, then gate it the vendor way and stop it.
+# Runtime masks are tmpfs so a cold boot is already clean, but systemd caches masked
+# state in memory: unmask and daemon-reload are both required before the gate means
+# anything, and no mask is ever re-applied (slive owns com.samsung.FCCallListener).
 for u in slive-provider-daemon.service slive-provider-daemon.path \
          com.samsung.FCCallListener.busname; do
     systemctl unmask --runtime "$u" >/dev/null 2>&1
 done
 systemctl daemon-reload >/dev/null 2>&1
-systemctl start --no-block slive-provider-daemon.service >/dev/null 2>&1
+touch $OPTOUT/slive-provider-daemon 2>/dev/null
+systemctl stop --no-block slive-provider-daemon.service >/dev/null 2>&1
 mkdir -p /run/user/5001 2>/dev/null
 touch /run/user/5001/bms_block 2>/dev/null
 
@@ -95,13 +106,16 @@ for u in $UNITS; do
     systemctl stop --no-block "$u" >/dev/null 2>&1
     systemctl reset-failed "$u" >/dev/null 2>&1
 done
-for u in bms; do
-    printf '%s -> %s\n' "$u" "$(systemctl is-active "$u.service" 2>&1 | head -1)"
+for u in bms slive-provider-daemon; do
+    printf '%s -> active=%s load=%s gated=%s\n' "$u" \
+        "$(systemctl is-active "$u.service" 2>&1 | head -1)" \
+        "$(systemctl show "$u.service" -p LoadState --value 2>&1)" \
+        "$([ -f "$OPTOUT/$u" ] && echo yes || echo no)"
 done
 
 # 5. kill sweep. Collect PIDs first, then skip $$, PID 1 and the launchpad
 #    pool (same self-exclusion rule as samsung-telemetry-off).
-# slive-provider-daemon left the patterns in 1.1.0 (bus-name owner; see header).
+# slive-provider-daemon: gated and stopped in step 3, not killed.
 PATTERNS="tvplusstandalone|bms-service|slive-util"
 POOL=$(ps -ef | grep "launchpad-process-pool" | grep -v grep | tr -s " " | cut -d" " -f2 | head -1)
 PIDS=$(ps -ef | grep -E "$PATTERNS" | grep -v grep | tr -s " " | cut -d" " -f2)
