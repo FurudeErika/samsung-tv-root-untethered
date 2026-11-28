@@ -5,7 +5,10 @@
 # UEP forbids passing a script file as an argument). While the module is
 # disabled the loop sleeps instead of exiting, so systemd never hot-loops it.
 # Env: MODULE_DIR, EVIDENCE (set by the unit file).
-PATTERNS="tvplusstandalone|bms-service|slive-provider-daemon|slive-util"
+# slive-provider-daemon left the patterns in 1.1.0: it is a D-Bus name owner
+# (com.samsung.FCCallListener) and killing it repeatedly reproduces the
+# name-owner wait documented in boot.sh.
+PATTERNS="tvplusstandalone|bms-service|slive-util"
 POOL=$(ps -ef | grep "launchpad-process-pool" | grep -v grep | tr -s " " | cut -d" " -f2 | head -1)
 UI=/home/owner/share/tmp/sdk_tools/selfroot-ui/modules
 LOG="$EVIDENCE/module-tvplus-off-watchdog.log"

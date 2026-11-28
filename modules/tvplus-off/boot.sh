@@ -28,9 +28,21 @@
 #   (memory/tvplus/appid = com.samsung.tv.csfs), which is deliberately NOT
 #   killed here; without bms-service it has nothing to play.
 #
-# Overlap: samsung-telemetry-off already masks bms, and
-# ad-telemetry-daemons-off already masks slive-provider-daemon. Repeating
-# that here is idempotent and keeps this module correct on its own.
+# Overlap: samsung-telemetry-off already masks bms. Repeating that here is
+# idempotent and keeps this module correct on its own.
+#
+# 1.1.0 — slive-provider-daemon is neither masked nor killed any more. It is
+# Type=dbus with BusName=com.samsung.FCCallListener, a bus-name owner, and
+# masking a name owner leaves callers waiting for an owner that can never
+# appear. That is the measured mechanism behind the 2-3 s remote-key dead zone
+# produced by masking data-service / org.tizen.tv.logger (see
+# samsung-telemetry-off 1.4.0; ad-telemetry-daemons-off 1.2.0 applies the same
+# rule). TV Plus does not need slive down: the UI is hosted by the home screen
+# and, as noted above, without bms-service it has nothing to play - so the
+# setting (autorun_tv_plus), the boot flag and the player (bms-service) are what
+# this module takes away, while the lineup fetcher idles. Whether slive can
+# safely be suppressed after all is a separate open measurement, tracked in the
+# Home Assistant repo's DISCOVERY.md; this module no longer depends on it.
 #
 # Not touched: db/tvplus/support (a product capability flag; turning it off
 # has unknown effects on tv-viewer and channel-list) and the TV Plus
@@ -44,7 +56,7 @@
 MODULE_DIR=${MODULE_DIR:-/opt/usr/share/selfroot/modules/tvplus-off}
 EVIDENCE=${EVIDENCE:-/home/owner/share/tmp/sdk_tools/selfroot-evidence}
 UI=/home/owner/share/tmp/sdk_tools/selfroot-ui/modules
-UNITS="bms.service bms.path slive-provider-daemon.service slive-provider-daemon.path sliveutil_channeldump_eventd_activation.service"
+UNITS="bms.service bms.path sliveutil_channeldump_eventd_activation.service"
 
 if [ -s "$UI/disabled/tvplus-off" ] || { [ -f "$MODULE_DIR/disabled" ] && [ ! -s "$UI/enabled/tvplus-off" ]; }; then
     systemctl stop tvroot-tvplus.service >/dev/null 2>&1
@@ -62,7 +74,16 @@ rm -f /opt/usr/apps/bstr_tvplus_mode /tmp/tvplus_ready 2>/dev/null
 #    the tmpfs bms block.
 OPTOUT=/opt/usr/share/systemd/system
 mkdir -p $OPTOUT 2>/dev/null
-touch $OPTOUT/bms $OPTOUT/slive-provider-daemon 2>/dev/null
+touch $OPTOUT/bms 2>/dev/null
+# 1.1.0 heal: undo what 1.0.x did to the name owner so an upgraded boot recovers
+# without a reboot (runtime masks are tmpfs, so a cold boot is already clean).
+rm -f $OPTOUT/slive-provider-daemon 2>/dev/null
+for u in slive-provider-daemon.service slive-provider-daemon.path \
+         com.samsung.FCCallListener.busname; do
+    systemctl unmask --runtime "$u" >/dev/null 2>&1
+done
+systemctl daemon-reload >/dev/null 2>&1
+systemctl start --no-block slive-provider-daemon.service >/dev/null 2>&1
 mkdir -p /run/user/5001 2>/dev/null
 touch /run/user/5001/bms_block 2>/dev/null
 
@@ -74,13 +95,14 @@ for u in $UNITS; do
     systemctl stop --no-block "$u" >/dev/null 2>&1
     systemctl reset-failed "$u" >/dev/null 2>&1
 done
-for u in bms slive-provider-daemon; do
+for u in bms; do
     printf '%s -> %s\n' "$u" "$(systemctl is-active "$u.service" 2>&1 | head -1)"
 done
 
 # 5. kill sweep. Collect PIDs first, then skip $$, PID 1 and the launchpad
 #    pool (same self-exclusion rule as samsung-telemetry-off).
-PATTERNS="tvplusstandalone|bms-service|slive-provider-daemon|slive-util"
+# slive-provider-daemon left the patterns in 1.1.0 (bus-name owner; see header).
+PATTERNS="tvplusstandalone|bms-service|slive-util"
 POOL=$(ps -ef | grep "launchpad-process-pool" | grep -v grep | tr -s " " | cut -d" " -f2 | head -1)
 PIDS=$(ps -ef | grep -E "$PATTERNS" | grep -v grep | tr -s " " | cut -d" " -f2)
 for pid in $PIDS; do
